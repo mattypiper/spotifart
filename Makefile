@@ -1,25 +1,23 @@
 CC = g++
-CXXFLAGS = -g
+CFLAGS = -g -std=gnu++0x
+SRCS = spotifart.cpp appkey.cpp
+LFLAGS = -L/usr/local/lib
+LIBS = -lspotify
+OBJS = $(SRCS:.cpp=.o)
+MAIN = spotifart
 
-#OBJDIR=obj
-#
-#LIBS=-lm
-#
-#_DEPS = spotifart.h
-#DEPS = $(patsubst %,$(IDIR)/%,$(_DEPS))
-#
-#_OBJ = spotifart.o
-#OBJ = $(patsubst %,$(OBJDIR)/%,$(_OBJ))
-#
-#$(OBJDIR)/%.o: %.cpp $(DEPS)
-#	$(GXX) -c -o $@ $< $(CFLAGS)
+.PHONY: depend clean
 
-TARGET = spotifart
+ALL: $(MAIN)
 
-.PHONY: clean
+$(MAIN): $(OBJS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $(MAIN) $(OBJS) $(LFLAGS) $(LIBS)
 
-all: $(TARGET)
+.cpp.o:
+	$(CC) $(CFLAGS) $(INCLUDES) -c $<  -o $@
 
 clean:
-	rm -f $(OBJDIR)/*.o spotifart 
+	rm -f *.o $(MAIN)
 
+depend: $(SRCS)
+	makedepend $(INCLUDES) $^
