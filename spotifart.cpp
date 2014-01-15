@@ -102,7 +102,7 @@ static int get_album_image(sp_album* album)
 	const char *str_artist = sp_artist_name(sp_album_artist(album));
 	
 	// can be SP_IMAGE_SMALL, _NORMAL, or _LARGE
-	const byte * image_id = sp_album_cover(album, SP_IMAGE_SIZE_LARGE);
+	const byte * image_id = sp_album_cover(album, SP_IMAGE_SIZE_NORMAL);
 
 	sp_image *image = sp_image_create(g_session, image_id);
 	if (image == NULL)
@@ -154,7 +154,17 @@ static void album_cb(sp_albumbrowse *result, void *userdata)
 	sp_albumbrowse_release(result);
 }
 
-// service the track vector on a worker thread
+/**
+ * Service the track vector on a background thread.
+ *
+ * The whole point of this worker thread is to stare down the track vector (lame)
+ * and issue album browse requests periodically. Performance was awful when issuing
+ * several hundred album browse requests, and they would start failing as well. So
+ * throttling back like this seems to work well. I guess I could do it in the main thread
+ * but I wrote it when I wasn't sure what was going on with main. It _is_ the callback
+ * thread, apparently. The docs at developer.spotify.com had me thinking it was a
+ * library thread.
+ */
 static void track_work()
 {
 	while (g_track_worker_run.load()) {
@@ -164,12 +174,9 @@ static void track_work()
 				sp_track *track = g_track_vector.back();
 				g_track_vector.pop_back();
 				sp_album *album = sp_track_album(track);
-				// create an album browse request for this track/album 
-				// the returned albumbrowse object is freed in the callback
 				sp_albumbrowse *albumbrowse = sp_albumbrowse_create(
 					g_session, album, &album_cb, NULL);
 				sp_albumbrowse_add_ref(albumbrowse);
-				//printf("browse object: %p\n", albumbrowse);
 			}
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -238,29 +245,6 @@ static void tracks_added(sp_playlist *pl, sp_track *const *tracks, int num_track
 
 static void playlist_state_changed(sp_playlist *pl, void *userdata)
 {
-#if 0
-	const char* playlist_name = sp_playlist_name(pl);
-
-	// argument check
-	if (!g_strlistname) {
-		return;
-	}
-
-	// skip this playlist if it is not the playlist name of interest
-	if (strcasecmp(playlist_name, g_strlistname)) {
-		return;
-	}
-
-	if (g_browse_success.load())
-		return;
-
-	int tracks = sp_playlist_num_tracks(pl);
-	g_todo_items = tracks;
-
-	printf("[*] Found playlist %s\n", playlist_name);
-	g_playlist = pl;
-	playlist_browse_try();
-#endif
 }
 
 static void playlist_metadata_updated(sp_playlist *pl, void *userdata)
@@ -277,13 +261,15 @@ static void playlist_metadata_updated(sp_playlist *pl, void *userdata)
 		return;
 	}
 
+	// don't try to browse the playlist again if we've already successfully
+	// browsed once... (this callback will keep firing after we've moved on to
+	// other things)
 	if (g_browse_success.load())
 		return;
 
-	int tracks = sp_playlist_num_tracks(pl);
-	g_todo_items = tracks;
-
 	// printf("[*] Found playlist %s\n", playlist_name);
+
+	g_todo_items = sp_playlist_num_tracks(pl);
 	g_playlist = pl;
 	playlist_browse_try();
 }
@@ -298,8 +284,13 @@ static void container_loaded(sp_playlistcontainer *pc, void *userdata)
 		exit(0);
 	}
 
+	// it would be neat if we could just read the playlist name here
+	// but I tried that and they were all blank (as of v12.1.51)
+	// so instead register the playlist_metadata_changed callback for
+	// all playlists (lame) and check the name there
 	for (int i = 0; i < num_playlists; ++i) {
 		sp_playlist *pl = sp_playlistcontainer_playlist(pc, i);
+		// TODO remove the callbacks somewhere
 		sp_error err = sp_playlist_add_callbacks(pl, &pl_skim_callbacks, NULL);
 		if (err != SP_ERROR_OK) {
 			fprintf(stderr, "[!] %s\n", sp_error_message(err));
@@ -318,6 +309,7 @@ static void logged_in(sp_session *sess, sp_error error)
 
 	printf("[*] Login successful\n");
 
+	// TODO remove this callback somewhere
 	sp_playlistcontainer_add_callbacks(pc, &pc_callbacks, NULL);
 }
 
@@ -430,13 +422,13 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	/* initialize sigint handler */
+	// initialize sigint handler
 	signal(SIGINT, sig_handler);
 
-	/* initialize libspotify callbacks and spconfig */
+	// initialize libspotify callbacks and spconfig
 	init_callbacks();
 
-	/* Create session */
+	// Create session
 	err = sp_session_create(&spconfig, &sp);
 
 	if (SP_ERROR_OK != err) {
@@ -449,10 +441,10 @@ int main(int argc, char **argv)
 
 	sp_session_login(sp, username, password, 0, NULL);
 
-	/* Create img dir if necessary */
+	// Create img dir if necessary
 	create_dir("img");
 
-	/* Create track worker */
+	// Create track worker
 	std::thread track_worker(track_work);
 
 	std::unique_lock<std::mutex> lock(g_notify_mutex);
@@ -468,14 +460,14 @@ int main(int argc, char **argv)
 			sp_session_process_events(sp, &next_timeout);
 		} while (next_timeout == 0);
 
-		/* if playlist of interest has been found, scan the tracks */
+		// if the playlist of interest has been found, scan the tracks.
+		// important not to do the callback registration changes here in main,
+		// not in a callback
 		if (g_playlist) {
 			sp_playlist_add_callbacks(g_playlist, &pl_scan_callbacks, NULL);
 			sp_playlist_remove_callbacks(g_playlist, &pl_skim_callbacks, NULL);
 		}
 
-		if (g_tracks_processing.load())
-			printf("Current processing %d tracks\n", g_tracks_processing.load());
 		g_notify_mutex.lock();
 	}
 	
