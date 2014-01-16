@@ -1,20 +1,21 @@
 #include <errno.h>
-#include <libgen.h>
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <signal.h>
 #include <sys/stat.h>
-#include <sys/time.h>
+
 #ifdef _WIN32
-#include <direct.h> // for _mkdir
+#include <Windows.h>
+#define strcasecmp _stricmp
+//#pragma comment(lib, "lib/win32/libspotify.lib")
+#include "include/api.h"
 #endif
 
 // C++ headers
 #include <iostream>
+#include <ios>
 #include <sstream>
 #include <fstream>
 #include <string>
@@ -26,29 +27,31 @@
 #include <thread>
 #include <atomic>
 
-// spotify headers
-#include <libspotify/api.h>
+
+// forward declare getopt (included in project as a c file)
+extern "C" int getopt(int nargc, char * const nargv[], const char *ostr);
+extern "C" char *optarg;
 
 extern "C" const uint8_t g_appkey[];
 extern "C" const size_t g_appkey_size;
 
-std::mutex g_notify_mutex;
-std::condition_variable g_notify_cond;
+static std::mutex g_notify_mutex;
+static std::condition_variable g_notify_cond;
 
 // Track vector handling
-std::mutex g_tracklist_mutex;
-std::vector<sp_track*> g_track_vector;
-std::atomic_uint g_tracks_processing(0);
-std::atomic_bool g_track_worker_run(true);
+static std::mutex g_tracklist_mutex;
+static std::vector<sp_track*> g_track_vector;
+static std::atomic<unsigned int> g_tracks_processing(0);
+static std::atomic<bool> g_track_worker_run(true);
 
 static int g_notify_do;
 static bool g_verbose = false;
 static std::atomic<bool> g_browse_success(false);
 static sp_session *g_session = NULL;
-const char *g_strlistname = NULL;
+static const char *g_strlistname = NULL;
 static sp_playlist *g_playlist = NULL;
 static sp_track *g_currenttrack = NULL;
-static std::atomic_uint g_todo_items(1);
+static std::atomic<unsigned int> g_todo_items(1);
 
 static sp_playlistcontainer_callbacks pc_callbacks = {};
 static sp_playlist_callbacks pl_skim_callbacks = {};
@@ -68,7 +71,9 @@ static void sig_handler(int signo)
 		g_todo_items = 0;
 }
 
-static void image_cb(sp_image *image, void *userdata)
+// TODO file name handling needs to be done in unicode
+// TODO certain filenames don't get created in windows (colon in name)
+static void SP_CALLCONV image_cb(sp_image *image, void *userdata)
 {
 	struct userdata *cb_data = (struct userdata*)userdata;
 	const char *str_artist = cb_data->artist;
@@ -83,12 +88,13 @@ static void image_cb(sp_image *image, void *userdata)
 			str_artist, str_album, format);
 	}
 
-	std::ostringstream oss;
-	oss << "img/" << str_artist << " - " << str_album << ".jpg";
-	std::string filename = oss.str();
+	std::stringstream ss;
+	ss << "img/" << str_artist << " - " << str_album << ".jpg";
+	std::string filename = ss.str();
 	std::cout << "[+] Writing " << filename << " --- " << len << " bytes" << std::endl;
-	std::ofstream ofs(filename);
-	ofs.write(static_cast<const char*>(data), len);
+	std::ofstream file;
+	file.open(filename, std::ios::binary);
+	file.write(static_cast<const char*>(data), len);
 
 	free(userdata);
 
@@ -97,7 +103,6 @@ static void image_cb(sp_image *image, void *userdata)
 
 static int get_album_image(sp_album* album)
 {
-	int ret = 0;
 	const char *str_album = sp_album_name(album);
 	const char *str_artist = sp_artist_name(sp_album_artist(album));
 	
@@ -122,10 +127,11 @@ static int get_album_image(sp_album* album)
 	cb_data->album = str_album;
 
 	sp_image_add_load_callback(image, image_cb, (void*)cb_data);
+	return 0;
 }
 
 // this will service on the main thread	
-static void album_cb(sp_albumbrowse *result, void *userdata)
+static void SP_CALLCONV album_cb(sp_albumbrowse *result, void *userdata)
 {
 	sp_album *album = sp_albumbrowse_album(result);
 	if (!album) {
@@ -236,18 +242,18 @@ static void playlist_browse_try()
 	sp_playlist_release(pl);
 }
 
-static void tracks_added(sp_playlist *pl, sp_track *const *tracks, int num_tracks,
+static void SP_CALLCONV tracks_added(sp_playlist *pl, sp_track *const *tracks, int num_tracks,
 	int position, void *userdata)
 {
 	if (g_strlistname && !strcasecmp(sp_playlist_name(pl), g_strlistname))
 		printf("[*] %d tracks added to %s\n", num_tracks, sp_playlist_name(pl));
 }
 
-static void playlist_state_changed(sp_playlist *pl, void *userdata)
+static void SP_CALLCONV playlist_state_changed(sp_playlist *pl, void *userdata)
 {
 }
 
-static void playlist_metadata_updated(sp_playlist *pl, void *userdata)
+static void SP_CALLCONV playlist_metadata_updated(sp_playlist *pl, void *userdata)
 {
 	const char* playlist_name = sp_playlist_name(pl);
 
@@ -274,7 +280,7 @@ static void playlist_metadata_updated(sp_playlist *pl, void *userdata)
 	playlist_browse_try();
 }
 
-static void container_loaded(sp_playlistcontainer *pc, void *userdata)
+static void SP_CALLCONV container_loaded(sp_playlistcontainer *pc, void *userdata)
 {
 	int num_playlists = sp_playlistcontainer_num_playlists(pc);
 	printf("[*] %d root playlists loaded\n", num_playlists);
@@ -298,7 +304,7 @@ static void container_loaded(sp_playlistcontainer *pc, void *userdata)
 	}
 }
 
-static void logged_in(sp_session *sess, sp_error error)
+static void SP_CALLCONV logged_in(sp_session *sess, sp_error error)
 {
 	sp_playlistcontainer *pc = sp_session_playlistcontainer(sess);
 
@@ -313,24 +319,24 @@ static void logged_in(sp_session *sess, sp_error error)
 	sp_playlistcontainer_add_callbacks(pc, &pc_callbacks, NULL);
 }
 
-static void logged_out(sp_session *session)
+static void SP_CALLCONV logged_out(sp_session *session)
 {
 	//g_logged_out = 1;
 }
 
-static void connection_error(sp_session *session, sp_error error)
+static void SP_CALLCONV connection_error(sp_session *session, sp_error error)
 {
 	fprintf(stderr, "[!] Spotify Connection Error: %s\n",
 		sp_error_message(error));
 }
 
-static void log_message(sp_session *session, const char *data)
+static void SP_CALLCONV log_message(sp_session *session, const char *data)
 {
 	if (g_verbose)
 		fprintf(stderr, "[~] %s", data);
 }
 
-static void notify_main_thread(sp_session *sess)
+static void SP_CALLCONV notify_main_thread(sp_session *sess)
 {
 	std::unique_lock<std::mutex> lock(g_notify_mutex);
 	g_notify_do = 1;
@@ -373,16 +379,27 @@ static bool predicate()
 	return g_notify_do ? true : false;
 }
 
-static void create_dir(const char *path)
+static bool create_dir(const char *path)
 {
-	struct stat st;
+	int ret = 0;
+	struct stat st = {};
 	stat(path, &st);
-	if (!(st.st_mode & S_IFDIR))
+	if (st.st_mode & S_IFDIR)
+		return true;
+
 #ifdef _WIN32
-		_mkdir(path);
+	if (!CreateDirectoryA(path, NULL))
+		ret = -1;
 #else
-		mkdir(path, 0777);
+	ret = mkdir(path, 0777);
 #endif
+
+	if (-1 == ret) {
+		fprintf(stderr, "Error creating directory %s\n", path);
+		return false;
+	}
+
+	return true;
 }
 
 int main(int argc, char **argv)
@@ -417,8 +434,12 @@ int main(int argc, char **argv)
 		}
 	}
 
+		// Create img dir if necessary
+	if (!create_dir("img"))
+		exit(1);
+
 	if (!username || !password) {
-		usage(basename(argv[0]));
+		usage(argv[0]);
 		exit(1);
 	}
 
@@ -441,8 +462,7 @@ int main(int argc, char **argv)
 
 	sp_session_login(sp, username, password, 0, NULL);
 
-	// Create img dir if necessary
-	create_dir("img");
+
 
 	// Create track worker
 	std::thread track_worker(track_work);
