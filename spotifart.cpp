@@ -11,6 +11,8 @@
 #define strcasecmp _stricmp
 //#pragma comment(lib, "lib/win32/libspotify.lib")
 #include "include/api.h"
+#else
+#include <libspotify/api.h>
 #endif
 
 // C++ headers
