@@ -373,7 +373,7 @@ static void init_callbacks()
 
 static void usage(const char *progname)
 {
-	fprintf(stderr, "Usage: %s -u <username> -p <password> -l <listname>\n", progname);
+	fprintf(stderr, "Usage: %s -u <username> -l <listname>\n", progname);
 }
 
 static bool predicate()
@@ -404,23 +404,36 @@ static bool create_dir(const char *path)
 	return true;
 }
 
+std::string get_password()
+{
+	std::string password;
+#ifdef _WIN32
+	char ch;
+	const char ENTER = 13;
+	std::cout << "Password: ";
+	while ((ch = _getch()) != ENTER)
+	{
+		password += ch;
+		std::cout << '*';
+	}
+#else
+	password = getpass("Password: ");
+#endif
+	return password;
+}
+
 int main(int argc, char **argv)
 {
 	sp_session *sp;
 	sp_error err;
 	int next_timeout = 0;
 	const char *username = NULL;
-	const char *password = NULL;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "u:p:l:v")) != EOF) {
+	while ((opt = getopt(argc, argv, "u:l:v")) != EOF) {
 		switch (opt) {
 		case 'u':
 			username = optarg;
-			break;
-
-		case 'p':
-			password = optarg;
 			break;
 
 		case 'l':
@@ -436,11 +449,11 @@ int main(int argc, char **argv)
 		}
 	}
 
-		// Create img dir if necessary
+	// Create img dir if necessary
 	if (!create_dir("img"))
 		exit(1);
 
-	if (!username || !password) {
+	if (!username) {
 		usage(argv[0]);
 		exit(1);
 	}
@@ -462,9 +475,7 @@ int main(int argc, char **argv)
 
 	g_session = sp;
 
-	sp_session_login(sp, username, password, 0, NULL);
-
-
+	sp_session_login(sp, username, get_password().c_str(), 0, NULL);
 
 	// Create track worker
 	std::thread track_worker(track_work);
