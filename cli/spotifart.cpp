@@ -8,6 +8,7 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#include <conio.h>
 #define strcasecmp _stricmp
 //#pragma comment(lib, "lib/win32/libspotify.lib")
 #include "include/api.h"
@@ -409,13 +410,23 @@ std::string get_password()
 	std::string password;
 #ifdef _WIN32
 	char ch;
-	const char ENTER = 13;
 	std::cout << "Password: ";
-	while ((ch = _getch()) != ENTER)
+	while (1)
 	{
-		password += ch;
-		std::cout << '*';
+		ch = _getch();
+		if (ch == '\r') {
+			break;
+		} else if (ch == '\b') {
+			if (password.length() > 0) {
+				std::cout << '\b' << ' ' << '\b';
+				password.pop_back();
+			}
+		} else {
+			password += ch;
+			std::cout << '*';
+		}
 	}
+	std::cout << std::endl;
 #else
 	password = getpass("Password: ");
 #endif
