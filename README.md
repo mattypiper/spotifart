@@ -22,4 +22,9 @@ Example Usage:
 1. Run with 
 
 # node.js Web App
-Coming soon...
+
+It's been 3 years since I wrote spotifart.
+I had a node.js webapp working for a while, but never linked to it from here.
+Anyway, it appears that libspotify changed, and this little guy doesn't work anymore.
+One boring weekend I'll update it and make it work again. (Or give it to a young guy that needs a C++ project!)
+
